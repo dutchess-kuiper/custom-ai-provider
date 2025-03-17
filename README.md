@@ -1,34 +1,72 @@
-# OpenAI-Compatible API Server
+# OpenAI-Compatible API Server with Haystack Integration
 
-This is a FastAPI server that provides an API interface compatible with OpenAI's Chat Completions API. It allows you to wrap your own AI models with an OpenAI-compatible interface, making them usable with tools and libraries designed for OpenAI's API.
+This is a FastAPI server that provides an API interface compatible with OpenAI's Chat Completions API. It integrates with Haystack, allowing you to build powerful NLP pipelines with any LLM while maintaining OpenAI API compatibility.
 
 ## Features
 
 - OpenAI-compatible `/v1/chat/completions` endpoint
+- Full integration with Haystack for advanced NLP pipelines
 - Support for streaming responses
-- Mock implementation that can be replaced with your own language model
+- Conversation history management
 - Compatible with OpenAI SDKs and libraries
+- Uses UV package manager and virtual environment for faster dependency installation
 
 ## Installation
 
-1. Clone this repository
-2. Install dependencies:
+### Automatic Setup (Recommended)
+
+Run the setup script which installs UV, creates a virtual environment, and installs all dependencies:
 
 ```bash
-pip install -r requirements.txt
+# Make the setup script executable
+chmod +x setup.sh
+
+# Run the setup script
+./setup.sh
 ```
+
+### Manual Setup
+
+If you prefer to set up manually:
+
+1. Install UV (fast Python package installer):
+
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+2. Create a virtual environment:
+
+   ```bash
+   uv venv .venv
+   ```
+
+3. Activate the virtual environment:
+
+   ```bash
+   source .venv/bin/activate
+   ```
+
+4. Install dependencies:
+   ```bash
+   uv pip install -r requirements.txt
+   ```
 
 ## Running the Server
 
-Start the server with the provided script:
+Start the server with the provided script (which automatically activates the virtual environment):
 
 ```bash
 ./start_server.sh
 ```
 
-Or run it directly:
+Or manually:
 
 ```bash
+# Activate the virtual environment
+source .venv/bin/activate
+
+# Run the server
 python main.py
 ```
 
@@ -36,10 +74,45 @@ The API will be available at `http://localhost:8001/v1`.
 
 ## Testing the Server
 
-Use the included test script to verify the server is running correctly:
+With the virtual environment activated:
 
 ```bash
 python test_client.py
+```
+
+## Haystack Integration
+
+This server uses [Haystack](https://haystack.deepset.ai/) to power its language model capabilities, with the following features:
+
+1. Uses a Haystack Pipeline with an OpenAIGenerator component
+2. Maintains conversation history for stateful chats
+3. Provides both standard and streaming response capabilities
+4. Handles error cases gracefully
+
+### Customizing the Haystack Pipeline
+
+To customize the Haystack pipeline:
+
+1. Modify the `HaystackPipeline` class in `main.py`
+2. Change the generator configuration or add additional components
+3. Implement your own processing logic as needed
+
+Example of adding a document retrieval component:
+
+```python
+from haystack.components.retrievers import InMemoryBM25Retriever
+from haystack.document_stores.in_memory import InMemoryDocumentStore
+
+# Initialize document store and add documents
+document_store = InMemoryDocumentStore()
+document_store.write_documents(your_documents)
+
+# Add retriever to pipeline
+retriever = InMemoryBM25Retriever(document_store=document_store)
+self.pipeline.add_component("retriever", retriever)
+
+# Connect components
+self.pipeline.connect("retriever", "generator")
 ```
 
 ## API Usage
@@ -75,13 +148,6 @@ Request body:
 ### Streaming Example
 
 Set `"stream": true` in your request to receive a streamed response.
-
-## Integrating Your Own Model
-
-To integrate your own language model:
-
-1. Modify the `generate_chat_completion` function in `main.py` to call your model
-2. Adapt the `stream_chat_completion` function if you want to support streaming
 
 ## Client Examples
 
@@ -146,7 +212,27 @@ const model = new OpenAICompatible({
 });
 ```
 
+## Security Notes
+
+⚠️ **Important**: The current implementation includes an API key directly in the code. In a production environment:
+
+1. Use environment variables or a secure secret management solution
+2. Follow proper security practices for API key handling
+3. Consider implementing proper authentication for your API
+
 ## Troubleshooting
+
+### Virtual Environment Issues
+
+If you encounter issues with the virtual environment:
+
+- Make sure you've run `./setup.sh` to create the virtual environment
+- If the script fails, try manually creating and activating the environment:
+  ```bash
+  python -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+  ```
 
 ### Connection Refused Errors
 
@@ -177,6 +263,15 @@ Solutions:
 - The server now tries to bind to both IPv4 and IPv6 interfaces
 - If needed, disable IPv6 resolution in your DNS settings
 
+### Haystack Issues
+
+If you encounter issues with the Haystack pipeline:
+
+- Check the console logs for detailed error messages
+- Verify your API key is valid and has sufficient permissions
+- Make sure all required Haystack components are properly initialized
+- If using custom components, verify they are correctly configured
+
 ### Next.js API Route Issues
 
 If using Next.js:
@@ -195,4 +290,6 @@ If you encounter CORS errors:
 
 ## References
 
-This implementation is based on the article [How to Build an OpenAI-Compatible API](https://towardsdatascience.com/how-to-build-an-openai-compatible-api-87c8edea2f06) from Towards Data Science.
+- This implementation is based on the article [How to Build an OpenAI-Compatible API](https://towardsdatascience.com/how-to-build-an-openai-compatible-api-87c8edea2f06) from Towards Data Science
+- Haystack documentation: [Haystack](https://docs.haystack.deepset.ai/)
+- UV documentation: [UV - Python Package Manager](https://github.com/astral-sh/uv)

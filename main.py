@@ -2,14 +2,21 @@ from typing import List, Optional, Union, Dict, Any, Literal
 import json
 import time
 import asyncio
+import uuid
+import socket
+import logging
+import os
 from fastapi import FastAPI, HTTPException, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
-import logging
-import uuid
-import socket
+
+# Haystack imports
+from haystack import Pipeline
+from haystack.components.generators import OpenAIGenerator
+from haystack.utils import Secret
+from haystack.dataclasses import ChatMessage
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -26,6 +33,137 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ----- Haystack Pipeline Implementation -----
+
+class HaystackPipeline:
+    """Haystack pipeline implementation with conversation support."""
+    
+    def __init__(self):
+        """Initialize a Haystack pipeline with OpenAIGenerator for conversation support."""
+        try:
+            
+            # Configure generator with the API key from environment variable
+            self.generator = OpenAIGenerator(
+                model="gpt-3.5-turbo",
+                # No system_prompt parameter as we'll incorporate it into our prompt format
+            )
+            
+            # Create pipeline
+            self.pipeline = Pipeline()
+            
+            # Add the generator component to the pipeline
+            self.pipeline.add_component("generator", self.generator)
+            
+            # Initialize conversation history
+            self.conversation_history: Dict[str, List[Dict[str, str]]] = {}
+            
+            logger.info("Haystack pipeline initialized successfully")
+        except Exception as e:
+            logger.error(f"Error initializing Haystack pipeline: {str(e)}")
+            raise
+    
+    async def run(self, messages: List[Dict[str, str]], conversation_id: Optional[str] = None) -> Dict[str, Any]:
+        """Run the pipeline with the given messages.
+        
+        Args:
+            messages: List of message dictionaries with 'role' and 'content'
+            conversation_id: Optional ID to maintain conversation history between calls
+                            If not provided, a new conversation ID will be generated
+        
+        Returns:
+            Dict containing query results and conversation information
+        """
+        try:
+            # Generate a conversation ID if not provided
+            if not conversation_id:
+                conversation_id = str(uuid.uuid4())
+            
+            # Initialize conversation if it doesn't exist
+            if conversation_id not in self.conversation_history:
+                self.conversation_history[conversation_id] = []
+                
+            # Convert messages to Haystack ChatMessage format
+            chat_messages = []
+            for msg in messages:
+                role = msg["role"]
+                content = msg["content"]
+                
+                if role == "user":
+                    chat_messages.append(ChatMessage.from_user(content))
+                elif role == "assistant":
+                    chat_messages.append(ChatMessage.from_assistant(content))
+                elif role == "system":
+                    chat_messages.append(ChatMessage.from_system(content))
+                elif role == "tool":
+                    # Handle tool messages if needed
+                    chat_messages.append(ChatMessage.from_tool(content, name=msg.get("name")))
+                else:
+                    logger.warning(f"Unknown message role: {role}, using as user message")
+                    chat_messages.append(ChatMessage.from_user(content))
+            
+            # Create a prompt from the messages - OpenAIGenerator expects a prompt
+            # Convert the chat messages to a string format that works with the generator
+            prompt = ""
+            for msg in messages:
+                role = msg["role"]
+                content = msg["content"]
+                prompt += f"{role.upper()}: {content}\n"
+            
+            # End with a prompt for the assistant to respond
+            prompt += "ASSISTANT: "
+            
+            # Call the OpenAI generator through the pipeline with the prompt
+            result = self.pipeline.run({"generator": {"prompt": prompt}})
+            
+            # Extract the assistant's response
+            assistant_reply = result["generator"]["replies"][0]
+            
+            # Add all messages to conversation history (if not already there)
+            for message in messages:
+                if message not in self.conversation_history[conversation_id]:
+                    self.conversation_history[conversation_id].append(message)
+            
+            # Add the assistant's reply to conversation history
+            self.conversation_history[conversation_id].append({"role": "assistant", "content": assistant_reply})
+            
+            return {
+                "reply": assistant_reply,
+                "conversation_id": conversation_id
+            }
+        except Exception as e:
+            logger.error(f"Error in Haystack pipeline: {str(e)}")
+            raise e
+    
+    async def stream_run(self, messages: List[Dict[str, str]], conversation_id: Optional[str] = None):
+        """Stream the pipeline output word by word (simulated with the standard run).
+        
+        Args:
+            messages: List of message dictionaries with 'role' and 'content'
+            conversation_id: Optional ID to maintain conversation history between calls
+                            If not provided, a new conversation ID will be generated
+        
+        Yields:
+            Words from the generated response
+        """
+        try:
+            # Use the updated run method to get the response
+            result = await self.run(messages, conversation_id)
+            reply = result["reply"]
+            
+            # Split the reply into words and yield each one
+            words = reply.split()
+            for word in words:
+                yield word + " "
+                await asyncio.sleep(0.05)  # Simulated delay
+        except Exception as e:
+            logger.error(f"Error in Haystack pipeline streaming: {str(e)}")
+            yield f"Error: {str(e)}"
+
+# Initialize the Haystack pipeline
+logger.info("Initializing Haystack pipeline...")
+pipeline = HaystackPipeline()
+logger.info("Haystack pipeline initialized successfully")
 
 # ----- Pydantic models for request/response validation -----
 
@@ -117,78 +255,58 @@ async def create_chat_completion(request: CompletionRequest):
 
 async def generate_chat_completion(request: CompletionRequest) -> CompletionResponse:
     """
-    Generate a non-streaming chat completion
+    Generate a non-streaming chat completion using Haystack
     """
-    # Here you would normally call your LLM
-    # For this example, we'll return a simple mock response
-    
-    # In a real implementation, you would:
-    # 1. Convert the request format to your model's format
-    # 2. Call your model
-    # 3. Convert the model's response to OpenAI format
-    
-    # Mock response
     completion_id = f"chatcmpl-{str(uuid.uuid4())}"
     current_time = int(time.time())
     
-    # Example mock response content
-    response_content = f"This is a mock response from model {request.model}."
-    
-    # Calculate mock token counts
-    prompt_tokens = sum(len(msg.content.split()) for msg in request.messages)
-    completion_tokens = len(response_content.split())
-    total_tokens = prompt_tokens + completion_tokens
-    
-    return CompletionResponse(
-        id=completion_id,
-        object="chat.completion",
-        created=current_time,
-        model=request.model,
-        choices=[
-            CompletionChoice(
-                index=0,
-                message=Message(role="assistant", content=response_content),
-                finish_reason="stop"
+    try:
+        # Convert request messages to format expected by Haystack
+        messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+        
+        # Call the Haystack pipeline
+        result = await pipeline.run(messages)
+        response_content = result["reply"]
+        
+        # Calculate rough token counts (this is a simplification)
+        prompt_tokens = sum(len(msg.content.split()) for msg in request.messages)
+        completion_tokens = len(response_content.split())
+        total_tokens = prompt_tokens + completion_tokens
+        
+        return CompletionResponse(
+            id=completion_id,
+            object="chat.completion",
+            created=current_time,
+            model=request.model,
+            choices=[
+                CompletionChoice(
+                    index=0,
+                    message=Message(role="assistant", content=response_content),
+                    finish_reason="stop"
+                )
+            ],
+            usage=CompletionUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens
             )
-        ],
-        usage=CompletionUsage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens
         )
-    )
+    except Exception as e:
+        logger.error(f"Error in generate_chat_completion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating completion: {str(e)}")
 
 async def stream_chat_completion(request: CompletionRequest):
     """
-    Stream a chat completion response word by word
+    Stream a chat completion response word by word using Haystack
     """
     completion_id = f"chatcmpl-{str(uuid.uuid4())}"
     current_time = int(time.time())
     
-    # Example response for streaming (you'd replace this with your actual LLM)
-    response_content = f"This is a mock streaming response from model {request.model}."
-    words = response_content.split()
-    
-    # First chunk with role
-    response = StreamResponse(
-        id=completion_id,
-        object="chat.completion.chunk",
-        created=current_time,
-        model=request.model,
-        choices=[
-            StreamChoice(
-                index=0,
-                delta=DeltaMessage(role="assistant"),
-                finish_reason=None
-            )
-        ]
-    )
-    yield f"data: {json.dumps(response.model_dump())}\n\n"
-    
-    # Stream each word individually
-    for word in words:
-        await asyncio.sleep(0.1)  # Simulate processing time
+    try:
+        # Convert request messages to format expected by Haystack
+        messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
         
+        # First chunk with role
         response = StreamResponse(
             id=completion_id,
             object="chat.completion.chunk",
@@ -197,31 +315,66 @@ async def stream_chat_completion(request: CompletionRequest):
             choices=[
                 StreamChoice(
                     index=0,
-                    delta=DeltaMessage(content=word + ' '),
+                    delta=DeltaMessage(role="assistant"),
                     finish_reason=None
                 )
             ]
         )
         yield f"data: {json.dumps(response.model_dump())}\n\n"
-    
-    # Final chunk
-    response = StreamResponse(
-        id=completion_id,
-        object="chat.completion.chunk",
-        created=current_time,
-        model=request.model,
-        choices=[
-            StreamChoice(
-                index=0,
-                delta=DeltaMessage(content=''),
-                finish_reason="stop"
+        
+        # Stream each word using Haystack's streamed response
+        async for word in pipeline.stream_run(messages):
+            response = StreamResponse(
+                id=completion_id,
+                object="chat.completion.chunk",
+                created=current_time,
+                model=request.model,
+                choices=[
+                    StreamChoice(
+                        index=0,
+                        delta=DeltaMessage(content=word),
+                        finish_reason=None
+                    )
+                ]
             )
-        ]
-    )
-    yield f"data: {json.dumps(response.model_dump())}\n\n"
-    
-    # End the stream
-    yield "data: [DONE]\n\n"
+            yield f"data: {json.dumps(response.model_dump())}\n\n"
+            
+        # Final chunk
+        response = StreamResponse(
+            id=completion_id,
+            object="chat.completion.chunk",
+            created=current_time,
+            model=request.model,
+            choices=[
+                StreamChoice(
+                    index=0,
+                    delta=DeltaMessage(content=''),
+                    finish_reason="stop"
+                )
+            ]
+        )
+        yield f"data: {json.dumps(response.model_dump())}\n\n"
+        
+        # End the stream
+        yield "data: [DONE]\n\n"
+    except Exception as e:
+        logger.error(f"Error in stream_chat_completion: {str(e)}")
+        # Send an error in the stream
+        error_response = StreamResponse(
+            id=completion_id,
+            object="chat.completion.chunk",
+            created=current_time,
+            model=request.model,
+            choices=[
+                StreamChoice(
+                    index=0,
+                    delta=DeltaMessage(content=f"Error: {str(e)}"),
+                    finish_reason="error"
+                )
+            ]
+        )
+        yield f"data: {json.dumps(error_response.model_dump())}\n\n"
+        yield "data: [DONE]\n\n"
 
 @app.get("/health")
 async def health_check():
