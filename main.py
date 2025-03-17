@@ -42,10 +42,9 @@ class HaystackPipeline:
     def __init__(self):
         """Initialize a Haystack pipeline with OpenAIGenerator for conversation support."""
         try:
-            
             # Configure generator with the API key from environment variable
             self.generator = OpenAIGenerator(
-                model="gpt-3.5-turbo",
+                model="gpt-4o",  # Using GPT-4o instead of GPT-3.5-turbo
                 # No system_prompt parameter as we'll incorporate it into our prompt format
             )
             
@@ -58,7 +57,13 @@ class HaystackPipeline:
             # Initialize conversation history
             self.conversation_history: Dict[str, List[Dict[str, str]]] = {}
             
-            logger.info("Haystack pipeline initialized successfully")
+            # Add a default system message to guide the model's behavior
+            self.default_system_message = {
+                "role": "system",
+                "content": "You are a helpful AI assistant powered by GPT-4. You provide clear, concise, and accurate information. Be friendly and conversational in your responses. When appropriate, provide detailed explanations and examples to help users understand complex topics. You have access to a wide range of knowledge and can help with various tasks."
+            }
+            
+            logger.info("Haystack pipeline initialized successfully with GPT-4")
         except Exception as e:
             logger.error(f"Error initializing Haystack pipeline: {str(e)}")
             raise
@@ -102,16 +107,32 @@ class HaystackPipeline:
                     logger.warning(f"Unknown message role: {role}, using as user message")
                     chat_messages.append(ChatMessage.from_user(content))
             
-            # Create a prompt from the messages - OpenAIGenerator expects a prompt
-            # Convert the chat messages to a string format that works with the generator
+            # Create a prompt that maintains the chat format
             prompt = ""
+            system_message = None
+            
+            # First, find and handle the system message if it exists
             for msg in messages:
-                role = msg["role"]
-                content = msg["content"]
-                prompt += f"{role.upper()}: {content}\n"
+                if msg["role"] == "system":
+                    system_message = msg["content"]
+                    break
+            
+            # Use default system message if none provided
+            if not system_message:
+                system_message = self.default_system_message["content"]
+            
+            # Add system message
+            prompt += f"System: {system_message}\n\n"
+            
+            # Add the conversation history
+            for msg in messages:
+                if msg["role"] != "system":  # Skip system message as it's already handled
+                    role = msg["role"].capitalize()
+                    content = msg["content"]
+                    prompt += f"{role}: {content}\n"
             
             # End with a prompt for the assistant to respond
-            prompt += "ASSISTANT: "
+            prompt += "Assistant: "
             
             # Call the OpenAI generator through the pipeline with the prompt
             result = self.pipeline.run({"generator": {"prompt": prompt}})
@@ -229,13 +250,13 @@ async def list_models():
         "object": "list",
         "data": [
             {
-                "id": "gpt-3.5-turbo",
+                "id": "gpt-4o-mini",
                 "object": "model",
                 "created": 1677610602,
                 "owned_by": "custom-ai-provider"
             },
             {
-                "id": "gpt-4",
+                "id": "gpt-4o",
                 "object": "model",
                 "created": 1677649963,
                 "owned_by": "custom-ai-provider"
