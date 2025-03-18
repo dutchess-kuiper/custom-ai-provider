@@ -34,157 +34,147 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----- Haystack Pipeline Implementation -----
+# ----- Haystack Pipeline Implementation (Functional Approach) -----
 
-class HaystackPipeline:
-    """Haystack pipeline implementation with conversation support."""
+# Initialize conversation history dictionary
+conversation_history: Dict[str, List[Dict[str, str]]] = {}
+
+# Default system message to guide the model's behavior
+default_system_message = {
+    "role": "system",
+    "content": "You are a helpful AI assistant powered by GPT-4. You provide clear, concise, and accurate information. Be friendly and conversational in your responses. When appropriate, provide detailed explanations and examples to help users understand complex topics. You have access to a wide range of knowledge and can help with various tasks."
+}
+
+# Initialize the generator and pipeline
+try:
+    # Configure generator with the API key from environment variable
+    generator = OpenAIGenerator(
+        model="gpt-4o",  # Using GPT-4o instead of GPT-3.5-turbo
+    )
     
-    def __init__(self):
-        """Initialize a Haystack pipeline with OpenAIGenerator for conversation support."""
-        try:
-            # Configure generator with the API key from environment variable
-            self.generator = OpenAIGenerator(
-                model="gpt-4o",  # Using GPT-4o instead of GPT-3.5-turbo
-                # No system_prompt parameter as we'll incorporate it into our prompt format
-            )
-            
-            # Create pipeline
-            self.pipeline = Pipeline()
-            
-            # Add the generator component to the pipeline
-            self.pipeline.add_component("generator", self.generator)
-            
-            # Initialize conversation history
-            self.conversation_history: Dict[str, List[Dict[str, str]]] = {}
-            
-            # Add a default system message to guide the model's behavior
-            self.default_system_message = {
-                "role": "system",
-                "content": "You are a helpful AI assistant powered by GPT-4. You provide clear, concise, and accurate information. Be friendly and conversational in your responses. When appropriate, provide detailed explanations and examples to help users understand complex topics. You have access to a wide range of knowledge and can help with various tasks."
-            }
-            
-            logger.info("Haystack pipeline initialized successfully with GPT-4")
-        except Exception as e:
-            logger.error(f"Error initializing Haystack pipeline: {str(e)}")
-            raise
+    # Create pipeline
+    pipeline = Pipeline()
     
-    async def run(self, messages: List[Dict[str, str]], conversation_id: Optional[str] = None) -> Dict[str, Any]:
-        """Run the pipeline with the given messages.
+    # Add the generator component to the pipeline
+    pipeline.add_component("generator", generator)
+    
+    logger.info("Haystack pipeline initialized successfully with GPT-4")
+except Exception as e:
+    logger.error(f"Error initializing Haystack pipeline: {str(e)}")
+    raise
+
+async def run_pipeline(messages: List[Dict[str, str]], conversation_id: Optional[str] = None) -> Dict[str, Any]:
+    """Run the pipeline with the given messages.
+    
+    Args:
+        messages: List of message dictionaries with 'role' and 'content'
+        conversation_id: Optional ID to maintain conversation history between calls
+                        If not provided, a new conversation ID will be generated
+    
+    Returns:
+        Dict containing query results and conversation information
+    """
+    try:
+        # Generate a conversation ID if not provided
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
         
-        Args:
-            messages: List of message dictionaries with 'role' and 'content'
-            conversation_id: Optional ID to maintain conversation history between calls
-                            If not provided, a new conversation ID will be generated
-        
-        Returns:
-            Dict containing query results and conversation information
-        """
-        try:
-            # Generate a conversation ID if not provided
-            if not conversation_id:
-                conversation_id = str(uuid.uuid4())
+        # Initialize conversation if it doesn't exist
+        if conversation_id not in conversation_history:
+            conversation_history[conversation_id] = []
             
-            # Initialize conversation if it doesn't exist
-            if conversation_id not in self.conversation_history:
-                self.conversation_history[conversation_id] = []
-                
-            # Convert messages to Haystack ChatMessage format
-            chat_messages = []
-            for msg in messages:
-                role = msg["role"]
+        # Convert messages to Haystack ChatMessage format
+        chat_messages = []
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+            
+            if role == "user":
+                chat_messages.append(ChatMessage.from_user(content))
+            elif role == "assistant":
+                chat_messages.append(ChatMessage.from_assistant(content))
+            elif role == "system":
+                chat_messages.append(ChatMessage.from_system(content))
+            elif role == "tool":
+                # Handle tool messages if needed
+                chat_messages.append(ChatMessage.from_tool(content, name=msg.get("name")))
+            else:
+                logger.warning(f"Unknown message role: {role}, using as user message")
+                chat_messages.append(ChatMessage.from_user(content))
+        
+        # Create a prompt that maintains the chat format
+        prompt = ""
+        system_message = None
+        
+        # First, find and handle the system message if it exists
+        for msg in messages:
+            if msg["role"] == "system":
+                system_message = msg["content"]
+                break
+        
+        # Use default system message if none provided
+        if not system_message:
+            system_message = default_system_message["content"]
+        
+        # Add system message
+        prompt += f"System: {system_message}\n\n"
+        
+        # Add the conversation history
+        for msg in messages:
+            if msg["role"] != "system":  # Skip system message as it's already handled
+                role = msg["role"].capitalize()
                 content = msg["content"]
-                
-                if role == "user":
-                    chat_messages.append(ChatMessage.from_user(content))
-                elif role == "assistant":
-                    chat_messages.append(ChatMessage.from_assistant(content))
-                elif role == "system":
-                    chat_messages.append(ChatMessage.from_system(content))
-                elif role == "tool":
-                    # Handle tool messages if needed
-                    chat_messages.append(ChatMessage.from_tool(content, name=msg.get("name")))
-                else:
-                    logger.warning(f"Unknown message role: {role}, using as user message")
-                    chat_messages.append(ChatMessage.from_user(content))
-            
-            # Create a prompt that maintains the chat format
-            prompt = ""
-            system_message = None
-            
-            # First, find and handle the system message if it exists
-            for msg in messages:
-                if msg["role"] == "system":
-                    system_message = msg["content"]
-                    break
-            
-            # Use default system message if none provided
-            if not system_message:
-                system_message = self.default_system_message["content"]
-            
-            # Add system message
-            prompt += f"System: {system_message}\n\n"
-            
-            # Add the conversation history
-            for msg in messages:
-                if msg["role"] != "system":  # Skip system message as it's already handled
-                    role = msg["role"].capitalize()
-                    content = msg["content"]
-                    prompt += f"{role}: {content}\n"
-            
-            # End with a prompt for the assistant to respond
-            prompt += "Assistant: "
-            
-            # Call the OpenAI generator through the pipeline with the prompt
-            result = self.pipeline.run({"generator": {"prompt": prompt}})
-            
-            # Extract the assistant's response
-            assistant_reply = result["generator"]["replies"][0]
-            
-            # Add all messages to conversation history (if not already there)
-            for message in messages:
-                if message not in self.conversation_history[conversation_id]:
-                    self.conversation_history[conversation_id].append(message)
-            
-            # Add the assistant's reply to conversation history
-            self.conversation_history[conversation_id].append({"role": "assistant", "content": assistant_reply})
-            
-            return {
-                "reply": assistant_reply,
-                "conversation_id": conversation_id
-            }
-        except Exception as e:
-            logger.error(f"Error in Haystack pipeline: {str(e)}")
-            raise e
-    
-    async def stream_run(self, messages: List[Dict[str, str]], conversation_id: Optional[str] = None):
-        """Stream the pipeline output word by word (simulated with the standard run).
+                prompt += f"{role}: {content}\n"
         
-        Args:
-            messages: List of message dictionaries with 'role' and 'content'
-            conversation_id: Optional ID to maintain conversation history between calls
-                            If not provided, a new conversation ID will be generated
+        # End with a prompt for the assistant to respond
+        prompt += "Assistant: "
         
-        Yields:
-            Words from the generated response
-        """
-        try:
-            # Use the updated run method to get the response
-            result = await self.run(messages, conversation_id)
-            reply = result["reply"]
-            
-            # Split the reply into words and yield each one
-            words = reply.split()
-            for word in words:
-                yield word + " "
-                await asyncio.sleep(0.05)  # Simulated delay
-        except Exception as e:
-            logger.error(f"Error in Haystack pipeline streaming: {str(e)}")
-            yield f"Error: {str(e)}"
+        # Call the OpenAI generator through the pipeline with the prompt
+        result = pipeline.run({"generator": {"prompt": prompt}})
+        
+        # Extract the assistant's response
+        assistant_reply = result["generator"]["replies"][0]
+        
+        # Add all messages to conversation history (if not already there)
+        for message in messages:
+            if message not in conversation_history[conversation_id]:
+                conversation_history[conversation_id].append(message)
+        
+        # Add the assistant's reply to conversation history
+        conversation_history[conversation_id].append({"role": "assistant", "content": assistant_reply})
+        
+        return {
+            "reply": assistant_reply,
+            "conversation_id": conversation_id
+        }
+    except Exception as e:
+        logger.error(f"Error in Haystack pipeline: {str(e)}")
+        raise e
 
-# Initialize the Haystack pipeline
-logger.info("Initializing Haystack pipeline...")
-pipeline = HaystackPipeline()
-logger.info("Haystack pipeline initialized successfully")
+async def stream_pipeline(messages: List[Dict[str, str]], conversation_id: Optional[str] = None):
+    """Stream the pipeline output word by word (simulated with the standard run).
+    
+    Args:
+        messages: List of message dictionaries with 'role' and 'content'
+        conversation_id: Optional ID to maintain conversation history between calls
+                        If not provided, a new conversation ID will be generated
+    
+    Yields:
+        Words from the generated response
+    """
+    try:
+        # Use the updated run method to get the response
+        result = await run_pipeline(messages, conversation_id)
+        reply = result["reply"]
+        
+        # Split the reply into words and yield each one
+        words = reply.split()
+        for word in words:
+            yield word + " "
+            await asyncio.sleep(0.05)  # Simulated delay
+    except Exception as e:
+        logger.error(f"Error in Haystack pipeline streaming: {str(e)}")
+        yield f"Error: {str(e)}"
 
 # ----- Pydantic models for request/response validation -----
 
@@ -286,7 +276,7 @@ async def generate_chat_completion(request: CompletionRequest) -> CompletionResp
         messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
         
         # Call the Haystack pipeline
-        result = await pipeline.run(messages)
+        result = await run_pipeline(messages)
         response_content = result["reply"]
         
         # Calculate rough token counts (this is a simplification)
@@ -344,7 +334,7 @@ async def stream_chat_completion(request: CompletionRequest):
         yield f"data: {json.dumps(response.model_dump())}\n\n"
         
         # Stream each word using Haystack's streamed response
-        async for word in pipeline.stream_run(messages):
+        async for word in stream_pipeline(messages):
             response = StreamResponse(
                 id=completion_id,
                 object="chat.completion.chunk",
