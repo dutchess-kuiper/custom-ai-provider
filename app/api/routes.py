@@ -1,17 +1,26 @@
-import json
-import time
 import uuid
-from typing import Union
-
-from fastapi import APIRouter, HTTPException
+import logging
+import asyncio
+import time
+import json
+from typing import Union, Dict, Any, List
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from app.models.chat import CompletionRequest, CompletionResponse, StreamResponse
 from app.models.chat import CompletionChoice, CompletionUsage, Message, StreamChoice, DeltaMessage
+from app.models.chat import MessageWithToolCalls, ToolCall, FunctionCall
 from app.services.llm import run_pipeline, stream_pipeline
 from app.config.settings import AVAILABLE_MODELS
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/v1")
+
+# Create a separate router for v2 endpoints with no prefix
+router_v2 = APIRouter()
+
 
 @router.get("/models")
 async def list_models():
@@ -43,14 +52,77 @@ async def generate_chat_completion(request: CompletionRequest) -> CompletionResp
     try:
         # Convert request messages to format expected by Haystack
         messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+
+        print(str(request))
+        
+        # Handle tools/functions if present in the request
+        pipeline_kwargs = {}
+        if request.tools:
+            pipeline_kwargs["tools"] = [
+                {
+                    "type": tool.type,
+                    "function": {
+                        "name": tool.function.name,
+                        "description": tool.function.description,
+                        "parameters": tool.function.parameters
+                    }
+                } for tool in request.tools
+            ]
+        elif request.functions:
+            pipeline_kwargs["functions"] = [
+                {
+                    "name": func.name,
+                    "description": func.description,
+                    "parameters": func.parameters
+                } for func in request.functions
+            ]
+        
+        if request.tool_choice:
+            pipeline_kwargs["tool_choice"] = request.tool_choice
+        elif request.function_call:
+            pipeline_kwargs["function_call"] = request.function_call
         
         # Call the Haystack pipeline
-        result = await run_pipeline(messages)
-        response_content = result["reply"]
+        result = await run_pipeline(messages, **pipeline_kwargs)
+        
+        # Check if the response contains tool calls
+        if "tool_calls" in result and result["tool_calls"]:
+            tool_calls = result["tool_calls"]
+            message = MessageWithToolCalls(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id=f"call_{i}",
+                        type="function",
+                        index=i,
+                        function=FunctionCall(
+                            name=tool_call["function"]["name"],
+                            arguments=tool_call["function"]["arguments"]
+                        )
+                    ) for i, tool_call in enumerate(tool_calls)
+                ]
+            )
+            finish_reason = "tool_calls"
+        elif "function_call" in result and result["function_call"]:
+            function_call = result["function_call"]
+            message = MessageWithToolCalls(
+                role="assistant",
+                content=None,
+                function_call=FunctionCall(
+                    name=function_call["name"],
+                    arguments=function_call["arguments"]
+                )
+            )
+            finish_reason = "function_call"
+        else:
+            response_content = result["reply"]
+            message = Message(role="assistant", content=response_content)
+            finish_reason = "stop"
         
         # Calculate rough token counts (this is a simplification)
         prompt_tokens = sum(len(msg.content.split()) for msg in request.messages)
-        completion_tokens = len(response_content.split())
+        completion_tokens = len(result.get("reply", "").split()) if "reply" in result else 100  # Estimate for tool calls
         total_tokens = prompt_tokens + completion_tokens
         
         return CompletionResponse(
@@ -61,8 +133,8 @@ async def generate_chat_completion(request: CompletionRequest) -> CompletionResp
             choices=[
                 CompletionChoice(
                     index=0,
-                    message=Message(role="assistant", content=response_content),
-                    finish_reason="stop"
+                    message=message,
+                    finish_reason=finish_reason
                 )
             ],
             usage=CompletionUsage(
@@ -72,6 +144,7 @@ async def generate_chat_completion(request: CompletionRequest) -> CompletionResp
             )
         )
     except Exception as e:
+        logger.error(f"Error in completion: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error generating completion: {str(e)}")
 
 async def stream_chat_completion(request: CompletionRequest):
@@ -84,6 +157,33 @@ async def stream_chat_completion(request: CompletionRequest):
     try:
         # Convert request messages to format expected by Haystack
         messages = [{"role": msg.role, "content": msg.content} for msg in request.messages]
+        
+        # Handle tools/functions if present in the request
+        pipeline_kwargs = {}
+        if request.tools:
+            pipeline_kwargs["tools"] = [
+                {
+                    "type": tool.type,
+                    "function": {
+                        "name": tool.function.name,
+                        "description": tool.function.description,
+                        "parameters": tool.function.parameters
+                    }
+                } for tool in request.tools
+            ]
+        elif request.functions:
+            pipeline_kwargs["functions"] = [
+                {
+                    "name": func.name,
+                    "description": func.description,
+                    "parameters": func.parameters
+                } for func in request.functions
+            ]
+        
+        if request.tool_choice:
+            pipeline_kwargs["tool_choice"] = request.tool_choice
+        elif request.function_call:
+            pipeline_kwargs["function_call"] = request.function_call
         
         # First chunk with role
         response = StreamResponse(
@@ -102,7 +202,83 @@ async def stream_chat_completion(request: CompletionRequest):
         yield f"data: {json.dumps(response.model_dump())}\n\n"
         
         # Stream each word using Haystack's streamed response
-        async for word in stream_pipeline(messages):
+        try:
+            async for chunk in stream_pipeline(messages, **pipeline_kwargs):
+                # Check if the chunk is a tool call
+                if isinstance(chunk, dict) and "tool_calls" in chunk:
+                    for i, tool_call in enumerate(chunk["tool_calls"]):
+                        response = StreamResponse(
+                            id=completion_id,
+                            object="chat.completion.chunk",
+                            created=current_time,
+                            model=request.model,
+                            choices=[
+                                StreamChoice(
+                                    index=0,
+                                    delta=DeltaMessage(
+                                        content=None,
+                                        tool_calls=[
+                                            ToolCall(
+                                                id=f"call_{i}",
+                                                type="function",
+                                                index=i,
+                                                function=FunctionCall(
+                                                    name=tool_call["function"]["name"],
+                                                    arguments=tool_call["function"]["arguments"]
+                                                )
+                                            )
+                                        ]
+                                    ),
+                                    finish_reason="tool_calls"
+                                )
+                            ]
+                        )
+                        yield f"data: {json.dumps(response.model_dump())}\n\n"
+                    finish_reason = "tool_calls"
+                elif isinstance(chunk, dict) and "function_call" in chunk:
+                    function_call = chunk["function_call"]
+                    response = StreamResponse(
+                        id=completion_id,
+                        object="chat.completion.chunk",
+                        created=current_time,
+                        model=request.model,
+                        choices=[
+                            StreamChoice(
+                                index=0,
+                                delta=DeltaMessage(
+                                    function_call=FunctionCall(
+                                        name=function_call["name"],
+                                        arguments=function_call["arguments"]
+                                    )
+                                ),
+                                finish_reason=None
+                            )
+                        ]
+                    )
+                    yield f"data: {json.dumps(response.model_dump())}\n\n"
+                    finish_reason = "function_call"
+                else:
+                    # Regular text content
+                    word = chunk
+                    response = StreamResponse(
+                        id=completion_id,
+                        object="chat.completion.chunk",
+                        created=current_time,
+                        model=request.model,
+                        choices=[
+                            StreamChoice(
+                                index=0,
+                                delta=DeltaMessage(content=word),
+                                finish_reason=None
+                            )
+                        ]
+                    )
+                    yield f"data: {json.dumps(response.model_dump())}\n\n"
+                    finish_reason = "stop"
+        except Exception as e:
+            logger.error(f"Error in stream processing: {str(e)}")
+            # If we encounter an error during streaming, fall back to non-streaming response
+            finish_reason = "stop"
             response = StreamResponse(
                 id=completion_id,
                 object="chat.completion.chunk",
@@ -111,7 +287,7 @@ async def stream_chat_completion(request: CompletionRequest):
                 choices=[
                     StreamChoice(
                         index=0,
-                        delta=DeltaMessage(content=word),
+                        delta=DeltaMessage(content=f"Error during processing: {str(e)}"),
                         finish_reason=None
                     )
                 ]
@@ -128,7 +304,7 @@ async def stream_chat_completion(request: CompletionRequest):
                 StreamChoice(
                     index=0,
                     delta=DeltaMessage(content=''),
-                    finish_reason="stop"
+                    finish_reason=finish_reason
                 )
             ]
         )
@@ -152,4 +328,5 @@ async def stream_chat_completion(request: CompletionRequest):
             ]
         )
         yield f"data: {json.dumps(error_response.model_dump())}\n\n"
-        yield "data: [DONE]\n\n" 
+        yield "data: [DONE]\n\n"
+

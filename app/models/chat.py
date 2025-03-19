@@ -6,6 +6,32 @@ class Message(BaseModel):
     content: str
     name: Optional[str] = None
 
+class FunctionDefinition(BaseModel):
+    name: str
+    description: Optional[str] = None
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+
+class ToolFunction(BaseModel):
+    function: FunctionDefinition
+
+class Tool(BaseModel):
+    type: Literal["function"] = "function"
+    function: FunctionDefinition
+
+class FunctionCall(BaseModel):
+    name: str
+    arguments: str
+
+class ToolCall(BaseModel):
+    id: str
+    type: str
+    index: int
+    function: FunctionCall
+
+class ToolChoice(BaseModel):
+    type: Literal["function"] = "function"
+    function: Dict[str, Any] = Field(default_factory=dict)
+
 class CompletionRequest(BaseModel):
     model: str
     messages: List[Message]
@@ -17,10 +43,20 @@ class CompletionRequest(BaseModel):
     presence_penalty: Optional[float] = 0.0
     frequency_penalty: Optional[float] = 0.0
     user: Optional[str] = None
+    tools: Optional[List[Tool]] = None
+    functions: Optional[List[FunctionDefinition]] = None
+    tool_choice: Optional[Union[str, ToolChoice]] = None
+    function_call: Optional[Union[str, Dict[str, Any]]] = None
+
+class MessageWithToolCalls(BaseModel):
+    role: str
+    content: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+    function_call: Optional[FunctionCall] = None
 
 class CompletionChoice(BaseModel):
     index: int
-    message: Message
+    message: Union[Message, MessageWithToolCalls]
     finish_reason: str
 
 class CompletionUsage(BaseModel):
@@ -39,6 +75,8 @@ class CompletionResponse(BaseModel):
 class DeltaMessage(BaseModel):
     role: Optional[str] = None
     content: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+    function_call: Optional[FunctionCall] = None
 
 class StreamChoice(BaseModel):
     index: int
