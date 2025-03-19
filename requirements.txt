@@ -9,3 +9,4 @@ haystack-ai==2.11.0
 openai>=1.56.1
 requests==2.31.0
 openai-agents==0.0.4
+google-ai-haystack==5.1.0
