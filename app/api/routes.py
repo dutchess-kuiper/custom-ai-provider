@@ -4,17 +4,42 @@ import asyncio
 import time
 import json
 from typing import Union, Dict, Any, List
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends, Header, Security
 from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.security.api_key import APIKeyHeader, APIKey
 
 from app.models.chat import CompletionRequest, CompletionResponse, StreamResponse
 from app.models.chat import CompletionChoice, CompletionUsage, Message, StreamChoice, DeltaMessage
 from app.models.chat import MessageWithToolCalls, ToolCall, FunctionCall
 from app.services.llm import run_pipeline, stream_pipeline
 from app.config.settings import AVAILABLE_MODELS
-
+import os
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# API Key security
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+# Get API keys from environment variable as a comma-separated string
+api_keys_str = os.getenv("API_KEYS", "")
+# Split the string into a set
+API_KEYS = {key.strip() for key in api_keys_str.split(",")}
+
+async def get_api_key(api_key_header: str = Security(api_key_header)):
+    if api_key_header is None:
+        raise HTTPException(
+            status_code=401,
+            detail="API Key missing",
+            headers={"WWW-Authenticate": API_KEY_NAME},
+        )
+    if api_key_header not in API_KEYS:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid API Key",
+            headers={"WWW-Authenticate": API_KEY_NAME},
+        )
+    return api_key_header
 
 router = APIRouter(prefix="/v1")
 
@@ -22,7 +47,7 @@ router = APIRouter(prefix="/v1")
 router_v2 = APIRouter()
 
 
-@router.get("/models")
+@router.get("/models", dependencies=[Depends(get_api_key)])
 async def list_models():
     """
     List available models that are compatible with the Chat API
@@ -32,7 +57,7 @@ async def list_models():
         "data": AVAILABLE_MODELS
     }
 
-@router.post("/chat/completions", response_model=Union[CompletionResponse, StreamResponse])
+@router.post("/chat/completions", response_model=Union[CompletionResponse, StreamResponse], dependencies=[Depends(get_api_key)])
 async def create_chat_completion(request: CompletionRequest):
     """
     Creates a model response for the given chat conversation
