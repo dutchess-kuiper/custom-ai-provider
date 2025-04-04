@@ -57,7 +57,7 @@ async def list_models():
         "data": AVAILABLE_MODELS
     }
 
-@router.post("/chat/completions", response_model=Union[CompletionResponse, StreamResponse], dependencies=[Depends(get_api_key)])
+@router.post("/chat/completions", response_model=Union[CompletionResponse, StreamResponse])
 async def create_chat_completion(request: CompletionRequest):
     """
     Creates a model response for the given chat conversation
@@ -107,7 +107,7 @@ async def generate_chat_completion(request: CompletionRequest) -> CompletionResp
         elif request.function_call:
             pipeline_kwargs["function_call"] = request.function_call
         
-        # Call the Haystack pipeline
+        # Use run_pipeline from app.services.llm instead of run_mcp_pipeline
         result = await run_pipeline(messages, **pipeline_kwargs)
         
         # Check if the response contains tool calls
