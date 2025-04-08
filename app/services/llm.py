@@ -193,6 +193,7 @@ def manual_octagon_invoke(**kwargs):
             result = parts[1].strip()
 
         logger.info(f"Octagon script result obtained")
+        logger.info(f"Result: {result}")
         return {"result": result}
 
     except Exception as e:
