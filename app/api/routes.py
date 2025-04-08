@@ -57,7 +57,7 @@ async def list_models():
         "data": AVAILABLE_MODELS
     }
 
-@router.post("/chat/completions", response_model=Union[CompletionResponse, StreamResponse])
+@router.post("/chat/completions", response_model=Union[CompletionResponse, StreamResponse], dependencies=[Depends(get_api_key)])
 async def create_chat_completion(request: CompletionRequest):
     """
     Creates a model response for the given chat conversation
