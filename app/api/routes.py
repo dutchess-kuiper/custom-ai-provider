@@ -67,7 +67,7 @@ async def create_chat_completion(request: CompletionRequest):
     else:
         return await generate_chat_completion(request)
 
-async def generate_chat_completion(request: CompletionRequest) -> CompletionResponse:
+def generate_chat_completion(request: CompletionRequest) -> CompletionResponse:
     """
     Generate a non-streaming chat completion using Haystack
     """
@@ -107,8 +107,9 @@ async def generate_chat_completion(request: CompletionRequest) -> CompletionResp
         elif request.function_call:
             pipeline_kwargs["function_call"] = request.function_call
         
-        # Call the Haystack pipeline
-        result = await run_pipeline(messages, **pipeline_kwargs)
+        # Use a synchronous approach to run_pipeline
+        # Use asyncio.run to run the async function in a synchronous context
+        result = asyncio.run(run_pipeline(messages, **pipeline_kwargs))
         
         # Check if the response contains tool calls
         if "tool_calls" in result and result["tool_calls"]:
@@ -134,7 +135,7 @@ async def generate_chat_completion(request: CompletionRequest) -> CompletionResp
             message = MessageWithToolCalls(
                 role="assistant",
                 content=None,
-                function_call=FunctionCall(
+                function_call=FunctionCall(     
                     name=function_call["name"],
                     arguments=function_call["arguments"]
                 )
