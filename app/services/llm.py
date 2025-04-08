@@ -65,29 +65,19 @@ except Exception as e:
     logger.error(f"Error initializing Haystack pipeline: {str(e)}")
     raise
 
-
-def dummy_weather(location: str):
-    return {
-        "temp": f"{random.randint(-10, 40)} °C",
-        "humidity": f"{random.randint(0, 100)}%",
-    }
-
-
 def manual_octagon_invoke(**kwargs):
     """
-    Executes either the single-agent MCP script or the multi-agent workflow script.
+    Executes either the Octagon single agent script or multi-agent workflow for company research.
     
     Args:
         **kwargs: Expected to contain:
-            - 'query': The query to pass to the tool
-            - 'agent_name': Optional name of the specific agent to use
-                           If provided, uses single-agent mode with run_octagon_mcp_pipeline.py
-            - 'company_name': Optional company name to focus the research on
-                             If provided without agent_name, uses multi-agent workflow
+            - 'query': The research question or objective
+            - 'company_name': Company name to focus the research on (required)
             - 'company_url': Optional company URL for better results
+            - 'agent': Optional specific agent to use (if provided, runs single agent instead of workflow)
     
     Returns:
-        The parsed response from the appropriate Octagon tool or workflow.
+        The parsed response from the Octagon agents.
     """
     try:
         query = kwargs.get("query")
@@ -95,30 +85,42 @@ def manual_octagon_invoke(**kwargs):
             logger.error("Missing 'query' argument for manual_octagon_invoke.")
             return {"error": "Tool requires a 'query' argument."}
 
-        # Get agent name and company info if provided
-        agent_name = kwargs.get("agent_name", "")
+        # Get company info - required for both workflows
         company_name = kwargs.get("company_name", "")
+        if not company_name:
+            logger.error("Missing 'company_name' argument for Octagon agents.")
+            return {"error": "Tool requires a 'company_name' argument for company research."}
+            
         company_url = kwargs.get("company_url", "")
         
-        # Determine which workflow to use based on parameters
-        if agent_name:
-            # Single agent mode - use Haystack MCP pipeline
-            logger.info(f"Using single Octagon agent: {agent_name}")
+        # Check if a specific agent is requested
+        agent = kwargs.get("agent", "")
+        python_executable = sys.executable
+        
+        if agent:
+            # Use the single agent script
+            logger.info(f"Using single agent ({agent}) for company: {company_name}")
             script_path = os.path.join(
-                os.path.dirname(__file__), "../../run_octagon_mcp_pipeline.py"
+                os.path.dirname(__file__), "../../octagon_single_agent.py"
             )
-            python_executable = sys.executable
             
-            # Command to execute the script
-            command = [python_executable, script_path, "--agent", agent_name, query]
+            # Command to execute the single agent script
+            command = [python_executable, script_path, "--agent", agent, "--company", company_name]
             
-        elif company_name:
-            # Multi-agent research workflow - use the agents library
+            # Add URL if provided
+            if company_url:
+                command.extend(["--url", company_url])
+                
+            # Add query if provided
+            if query:
+                # Properly quote the query to handle special characters
+                command.append(f'"{query}"')
+        else:
+            # Use the multi-agent research workflow (original behavior)
             logger.info(f"Using multi-agent research workflow for company: {company_name}")
             script_path = os.path.join(
                 os.path.dirname(__file__), "../../octagon_agents_workflow.py"
             )
-            python_executable = sys.executable
             
             # Command to execute the multi-agent workflow script
             command = [python_executable, script_path, "--company", company_name]
@@ -126,20 +128,15 @@ def manual_octagon_invoke(**kwargs):
             # Add URL if provided
             if company_url:
                 command.extend(["--url", company_url])
-                
-            # Add the query as the last parameter
+            
+            # Format query correctly to avoid issues with command line parsing
+            # The query is a positional argument at the end
             if query:
-                command.append(query)
-                
-        else:
-            # No agent_name or company_name - default to Haystack with transcripts agent
-            logger.info("No specific agent or company provided, using default transcripts agent")
-            script_path = os.path.join(
-                os.path.dirname(__file__), "../../run_octagon_mcp_pipeline.py"
-            )
-            python_executable = sys.executable
-            command = [python_executable, script_path, query]
-
+                # Make query more targeted to reduce conversation turns
+                targeted_query = f"Use only the most relevant agents to answer concisely: {query}"
+                # Properly quote the query to handle special characters
+                command.append(f'"{targeted_query}"')
+            
         logger.info(f"Running command: {' '.join(command)}")
 
         # Execute the script using subprocess
@@ -151,14 +148,14 @@ def manual_octagon_invoke(**kwargs):
             env=os.environ.copy(),
         )
 
-        # Send the input and get the output - add a timeout
+        # Send the input and get the output with a timeout
         try:
-            # Add a longer timeout (180 seconds) since multi-agent workflow takes longer
-            stdout, stderr = process.communicate(timeout=500)
+            # Reasonable timeout for the workflow (5 minutes)
+            stdout, stderr = process.communicate(timeout=300)
         except subprocess.TimeoutExpired:
             process.kill()
             stdout, stderr = process.communicate()
-            logger.error("Octagon script subprocess timed out after 500 seconds.")
+            logger.error("Octagon script subprocess timed out after 300 seconds.")
             return {
                 "error": "Octagon tool script timed out",
                 "stderr": stderr.strip(),
@@ -188,6 +185,7 @@ def manual_octagon_invoke(**kwargs):
 
         # Extract just the "Final Response:" part if present
         result = stdout.strip()
+        print(result)
         if "Final Response:" in result:
             parts = result.split("Final Response:", 1)
             result = parts[1].strip()
@@ -273,72 +271,51 @@ async def run_pipeline(
         octagon_tool = Tool(
             name="octagon",
             description="""A Tool to access financial data through Octagon's specialized agents.
-                           You can use this in two different ways:
                            
-                           1. SINGLE AGENT MODE - For specific financial data needs, specify:
-                              - query: Your specific question
-                              - agent_name: The specific agent to use (see list below)
+                           To perform company research, you must provide:
+                           - query: Your research question or objective
+                           - company_name: The company to research (required)
+                           - company_url: The company's website URL (optional, improves results)
+                           - agent: Specific agent to use (optional, if not provided uses multi-agent workflow)
                            
-                           2. MULTI-AGENT RESEARCH WORKFLOW - For comprehensive company research, specify:
-                              - query: Your research question or objective
-                              - company_name: The company to research (required)
-                              - company_url: The company's website URL (optional, improves results)
+                           Available agents for targeted research:
+                           - companies: Basic company information and details
+                           - funding: Funding rounds, investors, and valuations
+                           - deals: M&A activities and IPO data
+                           - investors: Investor details and investment history
+                           - debts: Private debt facilities and terms
+                           - sec: SEC filings and disclosures (for public companies)
+                           - transcripts: Earnings call transcripts (for public companies)
+                           - financials: Financial statements and ratios (for public companies)
+                           - stock: Stock price and market data (for public companies)
+                           - deep_research: Comprehensive multi-source analysis
                            
-                           Available specialized agents for single agent mode:
-                           - octagon-sec-agent: For SEC filings, regulatory documents, and company disclosures
-                           - octagon-transcripts-agent: For earnings call transcripts and conference calls
-                           - octagon-financials-agent: For financial statements, balance sheets, income statements
-                           - octagon-stock-data-agent: For stock prices, historical market data, trading volumes
-                           - octagon-companies-agent: For general company information, profiles, descriptions
-                           - octagon-funding-agent: For funding rounds, capital raises, investment information
-                           - octagon-deals-agent: For mergers, acquisitions, partnerships, corporate transactions
-                           - octagon-investors-agent: For information about institutional investors, funds, shareholders
-                           - octagon-scraper-agent: For web-scraped financial news from online sources
-                           - octagon-deep-research-agent: For comprehensive research reports and analyses
-                           - octagon-debts-agent: For corporate debt information, bonds, loans, liabilities
-                           
-                           The multi-agent research workflow automatically orchestrates the following process:
-                           1. Retrieves basic company information
-                           2. Analyzes funding rounds and investors
-                           3. Examines M&A and IPO activities
-                           4. Researches key investors
-                           5. Reviews debt facilities
-                           6. Synthesizes all findings into a comprehensive analysis""",
+                           If no specific agent is provided, the multi-agent workflow will orchestrate the optimal
+                           combination of agents to answer your query. Use a specific agent when you know
+                           exactly what information you need.""",
             function=manual_octagon_invoke,
             parameters={
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The specific financial query or research objective",
-                    },
-                    "agent_name": {
-                        "type": "string",
-                        "description": "For single agent mode: The specific Octagon agent to use. Don't specify this if using company_name for multi-agent workflow.",
-                        "enum": [
-                            "octagon-sec-agent",
-                            "octagon-transcripts-agent",
-                            "octagon-financials-agent",
-                            "octagon-stock-data-agent",
-                            "octagon-companies-agent",
-                            "octagon-funding-agent",
-                            "octagon-deals-agent",
-                            "octagon-investors-agent",
-                            "octagon-scraper-agent",
-                            "octagon-deep-research-agent",
-                            "octagon-debts-agent",
-                        ],
+                        "description": "Your research question or objective.",
                     },
                     "company_name": {
                         "type": "string",
-                        "description": "For multi-agent workflow: The name of the company to research. Providing this without agent_name will trigger the multi-agent research workflow.",
+                        "description": "The name of the company to research (required)",
                     },
                     "company_url": {
                         "type": "string", 
-                        "description": "For multi-agent workflow: The company's website URL (optional, improves research results for private companies)",
+                        "description": "The company's website URL (optional, improves research results for private companies)",
+                    },
+                    "agent": {
+                        "type": "string",
+                        "enum": ["companies", "funding", "deals", "investors", "debts", "sec", "transcripts", "financials", "stock", "deep_research"],
+                        "description": "Specific agent to use for targeted research (optional, if not provided uses multi-agent workflow)",
                     }
                 },
-                "required": ["query"],
+                "required": ["query", "company_name"],
             },
         )
 

@@ -179,7 +179,7 @@ async def run_research_workflow(company_name, company_url=None, query=None):
         return f"Error: {str(e)}"
 
 async def main():
-    # Parse command line arguments
+    # Parse command line arguments eg python octagon_agents_workflow.py --company "Example Corp" --url "example.com" --query "What is the company's revenue?"
     parser = argparse.ArgumentParser(description="Run Octagon multi-agent research workflow")
     parser.add_argument("--company", required=True, help="The company name to research")
     parser.add_argument("--url", help="The company URL (optional)")
